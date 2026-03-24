@@ -1,74 +1,167 @@
-# PerfJix - Jitsi Stress Testing Tool
+# PerfJix - WebRTC Stress Testing Tool
 
-A lightweight, highly scalable load testing alternative to `jitsi-meet-torture`. It is written entirely in Python, eliminating bulky Java frameworks, and leverages Dockerized headless Selenium Grid nodes to instantly spin up synthetic meeting participants broadcasting fake media streams.
+A lightweight, highly scalable load testing tool for Jitsi Meet and Wimi AirTime servers. Written entirely in Python, it leverages Dockerized headless Selenium Grid nodes to spin up synthetic meeting participants broadcasting fake media streams.
 
 ## Features
-- **Headless Bots**: Seamlessly connects bots entirely in the background, circumventing excessive desktop GUI rendering.
-- **Auto-Lobby Bypass**: Intelligently scans and clicks through pre-join security screens.
-- **Synthetic A/V Injectors**: Auto-grants camera/mic permissions using standard Google Chrome WebRTC media mocks.
-- **ThreadPool Architecture**: Python dynamically scales grid requests concurrently for deep server strain.
+
+- **Multi-Platform Support**: Test both **Jitsi Meet** (`/<room>`) and **Wimi AirTime** (`#/?room=<id>`) servers
+- **Headless Bots**: Connects bots entirely in the background via headless Chrome
+- **Auto-Join Flow**: Automatically handles pre-join screens, lobby pages, and iframe-embedded Jitsi instances
+- **Synthetic A/V**: Auto-grants camera/mic permissions using Chrome WebRTC media mocks
+- **ThreadPool Architecture**: Dynamically scales concurrent bot sessions for deep server strain
+- **Live Docker Monitoring**: Tracks JVB and Jicofo CPU, RAM, and network usage in real time
+- **Disconnect Detection**: Monitors for mid-test connection drops
 
 ---
 
-## 🚀 Setup & Execution
+> ⚠️ Running several users with `--show-browser` on a local machine will crush Docker's virtual display manager. Use headless mode for actual stress testing.
 
-1. Initialize your local Selenium Docker grid:
+---
+
+## 🚀 Setup
+
+### 1. Start the Selenium Grid
+
 ```bash
 ./run.sh
 ```
 
-2. Execute a standard headless **Stress Test** (Example: 20 users spread across 4 rooms for 5 minutes):
+This will:
+- Start Selenium Hub + Chrome nodes via Docker Compose
+- Create a Python virtual environment
+- Install dependencies
+
+To scale Chrome nodes for higher load:
 ```bash
-./venv/bin/python main.py --url https://192.168.1.2:8443 --rooms 4 --users-per-room 5 --duration 300
+docker-compose up -d --scale chrome=10
 ```
 
-### Advanced Test Scenarios
+### 2. (Optional) Spin Up a Local Jitsi Server
 
-**Massive Multi-Room Saturation:**
-```bash
-./venv/bin/python main.py --url https://192.168.1.2:8443 --rooms 10 --users-per-room 4 --duration 600
-```
+If you don't have a Jitsi server to test against:
 
-**Single Bot Visual Debugging (via VNC):**
-Watch a bot physically join and broadcast streams via `http://localhost:4444`. 
 ```bash
-./venv/bin/python main.py --url https://192.168.1.2:8443 --rooms 1 --users-per-room 1 --duration 60 --show-browser
+cp .env.jitsi .env
+docker-compose -f jitsi-server.yml --env-file .env up -d
 ```
-*(Warning: Running several users with `--show-browser` on a local development machine will crush Docker's virtual display manager! Use strictly in headless mode for actual stress testing).*
 
 ---
 
-## 📊 Technical Benchmarks & Server Load
+## 🧪 Usage
 
-When scaling PerfJix against your `docker-jitsi-meet` server, you must mathematically profile the bandwidth and CPU strain beforehand to identify true platform limits versus artificial network bottlenecks. 
+### CLI Arguments
 
-Below are the industry-standard metrics for what the core Jitsi architecture consumes **per active video participant**:
+| Argument | Default | Description |
+|---|---|---|
+| `--url` | *(required)* | Base URL of the server |
+| `--rooms` | `1` | Number of concurrent rooms (ignored if `--room-id` is set) |
+| `--room-id` | `None` | Specific room ID to join |
+| `--users-per-room` | `2` | Number of bot users per room |
+| `--duration` | `60` | Duration in seconds to stay in the room |
+| `--hub-url` | `http://localhost:4444/wd/hub` | Selenium Hub URL |
+| `--url-format` | `jitsi` | URL format: `jitsi` = `/<room>`, `airtime` = `#/?room=<id>` |
+| `--show-browser` | `false` | Show browser in VNC (disable headless) |
 
-### 1. Resources Per Jitsi Participant
-- **Bandwidth (Network Layer)**: 
-  - Average Client: **~2.5 Mbps Download / ~1.0 Mbps Upload**
-  - *JVB Multiplier Factor*: In a single 50-user room, the Jitsi Videobridge (JVB) must route ~50 simultaneous streams, pushing over **~120+ Mbps** of raw outbound bandwidth from the server.
-- **CPU (Processing Limits)**: 
-  - The JVB routing engine consumes roughly **~3% to 5%** of a modern CPU core per active video connection.
-  - A 100-user conference will mathematically max out a standard 4-Core/8-Thread server entirely.
-- **RAM Memory Allocation**: 
-  - The `jvb` and `jicofo` Java services run a ~2GB baseline heap.
-  - Expect an additional **~10MB to ~15MB** of RAM utilized per active WebRTC pipeline.
-  - *Note*: Selenium Nodes (your PerfJix bots) consume approx. **200MB to 400MB** of host memory per headless Chrome instance.
+### Jitsi Meet (Standard)
 
-### 2. How to Monitor Your Jitsi Server
+Test against a Jitsi server with 20 users across 4 auto-generated rooms for 5 minutes:
 
-While `PerfJix` is actively sending users to your URLs, open a secondary SSH terminal on your Jitsi server and utilize these technical commands:
-
-**Live Docker Container Analytics:**
 ```bash
+./venv/bin/python main.py \
+  --url https://jitsi.xxx.io \
+  --rooms 4 \
+  --users-per-room 5 \
+  --duration 300
+```
+
+### Wimi AirTime (Specific Room)
+
+Test against a Wimi AirTime server with a specific room ID:
+
+```bash
+./venv/bin/python main.py \
+  --url https://tenantx.company.com/jitsi/ \
+  --room-id 69bc00dda81f10f2db938513a9cb5fc8 \
+  --url-format jitsi \
+  --users-per-room 5 \
+  --duration 120
+```
+
+---
+
+## 📊 Output
+
+After each test, PerfJix prints a summary report:
+
+```
+============================================================
+ 📊 PERFJIX DEEP TEST RESULTS & SERVER METRICS 📊
+============================================================
+⏱️  Total Wall-Clock Runtime:   65.23 seconds
+✅  Total Successful Joins:     10/10
+⚠️  Total Mid-Test Disconnects: 0
+❌  Total Hard Join Failures:   0
+------------------------------------------------------------
+ 🖥️  JITSI BACKEND STRAIN (DOCKER)
+   ➤ JVB (Videobridge) CPU:     45.2%
+   ➤ JVB (Videobridge) RAM:     512MiB / 2GiB
+   ➤ JVB Total Traffic In/Out:  1.2GB / 3.8GB
+
+   ➤ Jicofo (Focus Room) CPU:   12.3%
+   ➤ Jicofo (Focus Room) RAM:   256MiB / 1GiB
+   ➤ Jicofo Total Net I/O:      45MB / 120MB
+============================================================
+```
+
+---
+
+## 📐 Capacity Planning
+
+### Resources Per Jitsi Participant
+
+| Resource | Per User | Notes |
+|---|---|---|
+| **Bandwidth** | ~2.5 Mbps ↓ / ~1.0 Mbps ↑ | JVB routes all streams; 50 users ≈ 120+ Mbps outbound |
+| **CPU** | ~3-5% per core | 100 users saturates a 4-core/8-thread server |
+| **RAM** | ~10-15 MB | JVB/Jicofo baseline heap: ~2 GB |
+| **Selenium Node** | ~200-400 MB | Per headless Chrome instance |
+
+### Scaling Limits
+
+| Chrome Nodes | Max Sessions Each | Total Bots |
+|---|---|---|
+| 2 (default) | 5 | 10 |
+| 5 | 5 | 25 |
+| 10 | 5 | 50 |
+
+Scale with: `docker-compose up -d --scale chrome=<N>`
+
+---
+
+## 🔍 Monitoring During Tests
+
+While PerfJix is running, monitor your server in a separate terminal:
+
+```bash
+# Live Docker container stats
 docker stats jvb jicofo prosody web
-```
-*Use this to track JVB CPU% bursting past 100% or Jicofo JVM Memory Limits triggering OutOfMemory errors.*
 
-**Hardware IO & Bandwidth Monitoring:**
-```bash
+# System-level monitoring
 htop
-nload eth0  # (or your server's primary network interface)
+nload eth0
 ```
-*If `nload` shows outbound traffic hitting your ISP's Gigabit speed limit, your Jitsi server hasn't failed—your bandwidth pipe has simply saturated!*
+
+---
+
+## 📁 Project Structure
+
+```
+PerfJix/
+├── main.py              # Core stress testing engine
+├── docker-compose.yml   # Selenium Grid (Hub + Chrome nodes)
+├── jitsi-server.yml     # Optional local Jitsi server
+├── .env                 # Environment config
+├── .env.jitsi           # Default Jitsi server env template
+├── run.sh               # One-command setup script
+└── requirements.txt     # Python dependencies (selenium)
+```
