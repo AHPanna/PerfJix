@@ -158,20 +158,22 @@ class SSHMonitor:
             logging.error("[SSHMonitor] paramiko not installed. Run: pip install paramiko")
             return
 
-        label = f"{self._user}@{self._host}"
-        via = f" via {self._jump}" if self._jump else " (direct)"
-        logging.info(f"[SSHMonitor] Connecting to {label}{via} …")
-
         bastion, client = None, None
+        _first_connect = True
 
         while not self._stop.is_set():
             try:
                 if client is None:
+                    if _first_connect:
+                        logging.info("[SSHMonitor] Polling remote docker stats …")
+                        _first_connect = False
+                    else:
+                        logging.debug("[SSHMonitor] Reconnecting …")
                     if self._jump:
                         bastion, client = self._make_jump_client(paramiko)
                     else:
                         bastion, client = self._make_direct_client(paramiko)
-                    logging.info("[SSHMonitor] Connected. Polling remote docker stats …")
+                    logging.debug("[SSHMonitor] SSH session established.")
 
                 _, stdout, stderr = client.exec_command(self._DOCKER_CMD, timeout=15)
                 output = stdout.read().decode("utf-8", errors="replace")

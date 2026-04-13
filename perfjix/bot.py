@@ -76,7 +76,7 @@ class JitsiBot:
             )
 
             driver.get(room_url)
-            time.sleep(5)
+            time.sleep(2)  # brief wait for initial page render
 
             # ── RTCPeerConnection interceptor ──────────────────────────────
             # Injected AFTER page load but BEFORE the join click.
@@ -163,53 +163,181 @@ class JitsiBot:
             pass  # Bypassed correctly via URL params
 
     def _join_airtime(self, driver, user_id: int, room_name: str) -> None:
-        """Wimi AirTime join flow (iframe-embedded Jitsi)."""
-        # Step 1 – Fill username & click Start on the outer page
-        try:
-            logging.info(f"[User {user_id} -> Room {room_name}]: Filling username …")
-            username_input = WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "input#join-username"))
+        """Wimi AirTime join flow (iframe-embedded Jitsi).
+
+        Flow
+        ----
+        1. Wait for SPA loading overlay to disappear.
+        2. Fill username + click Start (skip silently if form not found —
+           means a meeting is already active for this room).
+        3. Wait up to 20 s for the Jitsi iframe src to be populated.
+        4. If src is still empty → the SPA JS is stuck.
+           Do a hard cache-busting reload and repeat steps 1-3 with a
+           longer 30 s timeout.  (User's diagnosis: page needs a refresh.)
+        5. Switch into the iframe (3 quick retries, name then index-0).
+        6. Click "Join meeting" or "Join without audio".
+        7. Raises RuntimeError if we never entered the iframe, so the
+           caller correctly counts this as a failed join.
+        """
+        START_SELECTORS = [
+            "button.button-green",
+            "button[type='submit']",
+            "button.btn-primary",
+            "button.join-button",
+            "input[type='submit']",
+        ]
+        USERNAME_COMPOUND = (
+            "input#join-username, "
+            "input[name='username'], "
+            "input[placeholder*='name' i], "
+            "input[placeholder*='pseudo' i]"
+        )
+
+        # ------------------------------------------------------------------
+        # Helpers (closures so they share locals)
+        # ------------------------------------------------------------------
+
+        def wait_for_spa():
+            """Wait for #main-load overlay to vanish (SPA boot)."""
+            try:
+                WebDriverWait(driver, 40).until(
+                    EC.invisibility_of_element_located((By.ID, "main-load"))
+                )
+                logging.info(f"[User {user_id} -> Room {room_name}]: SPA ready.")
+            except Exception:
+                logging.debug(f"[User {user_id}]: No #main-load overlay, continuing.")
+
+        def do_login():
+            """Fill username + click Start.  Silent if form is absent."""
+            try:
+                inp = WebDriverWait(driver, 12).until(
+                    EC.visibility_of_element_located((By.CSS_SELECTOR, USERNAME_COMPOUND))
+                )
+                fid = inp.get_attribute("id") or inp.get_attribute("name") or "?"
+                logging.info(f"[User {user_id}]: Username field found (id='{fid}')")
+                inp.clear()
+                inp.send_keys(f"PerfJixBot_{user_id}")
+                time.sleep(0.4)
+                for sel in START_SELECTORS:
+                    try:
+                        btn = driver.find_element(By.CSS_SELECTOR, sel)
+                        if btn.is_displayed():
+                            btn.click()
+                            logging.info(
+                                f"[User {user_id} -> Room {room_name}]: "
+                                f"Clicked Start via '{sel}', waiting for lobby …"
+                            )
+                            time.sleep(3)
+                            return
+                    except Exception:
+                        continue
+                raise RuntimeError("Start button not found")
+            except Exception as e:
+                # Form is likely absent because the meeting is already active;
+                # the iframe may load directly without the login step.
+                logging.info(
+                    f"[User {user_id}]: Login form not found or unusable ({e}). "
+                    f"Meeting may already be running — proceeding to iframe."
+                )
+
+        def wait_iframe_src(timeout: int) -> bool:
+            """Return True when jitsiConferenceFrame0.src is non-empty."""
+            try:
+                # Presence first (fast)
+                WebDriverWait(driver, timeout).until(
+                    EC.presence_of_element_located((By.ID, "jitsiConferenceFrame0"))
+                )
+                # Then src populated
+                WebDriverWait(driver, timeout).until(lambda d: (
+                    d.find_element(By.ID, "jitsiConferenceFrame0").get_attribute("src") or ""
+                ).strip() != "")
+                src = driver.find_element(By.ID, "jitsiConferenceFrame0").get_attribute("src")
+                logging.info(f"[User {user_id}]: iframe src ready → {src}")
+                return True
+            except Exception:
+                return False
+
+        # ------------------------------------------------------------------
+        # Pass 1: Normal attempt
+        # ------------------------------------------------------------------
+        logging.info(f"[User {user_id} -> Room {room_name}]: AirTime join — pass 1")
+        wait_for_spa()
+        do_login()
+
+        if not wait_iframe_src(timeout=20):
+            # ------------------------------------------------------------------
+            # Pass 2: Hard cache-busting reload and retry
+            # The SPA JS can get stuck after a concurrent Start click by another
+            # user.  A hard reload forces it to re-fetch room credentials and
+            # repopulate the iframe src.
+            # ------------------------------------------------------------------
+            logging.warning(
+                f"[User {user_id} -> Room {room_name}]: "
+                f"iframe src not populated — doing hard reload (pass 2) …"
             )
-            username_input.clear()
-            username_input.send_keys(f"PerfJixBot_{user_id}")
-            time.sleep(1)
-            driver.find_element(By.CSS_SELECTOR, "button.button-green").click()
-            logging.info(f"[User {user_id} -> Room {room_name}]: Clicked Start, waiting for lobby …")
+            driver.execute_script("location.reload(true)")
             time.sleep(3)
-        except Exception as e:
-            logging.warning(f"[User {user_id} -> Room {room_name}]: Username/Start step failed: {e}")
+            wait_for_spa()
+            do_login()
 
-        # Step 2 – Switch into the embedded Jitsi iframe
-        try:
-            logging.info(f"[User {user_id} -> Room {room_name}]: Switching to Jitsi iframe …")
-            iframe = WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.ID, "jitsiConferenceFrame0"))
-            )
-            driver.switch_to.frame(iframe)
-            # Inject the hook inside the iframe — RTCPeerConnections live here
-            self._inject_rtc_hook(driver, user_id)
-            logging.info(f"[User {user_id} -> Room {room_name}]: Switched to iframe successfully.")
-        except Exception as e:
-            logging.warning(f"[User {user_id} -> Room {room_name}]: Could not switch to iframe: {e}")
+            if not wait_iframe_src(timeout=30):
+                raise RuntimeError(
+                    "iframe src never populated even after hard reload — "
+                    "giving up so the join is counted as failed."
+                )
 
-        # Step 3 – Click "Join meeting" (inside iframe)
+        # ------------------------------------------------------------------
+        # Switch into the iframe — 3 quick attempts
+        # ------------------------------------------------------------------
+        time.sleep(1)  # let Chrome spin up the frame renderer
+        switched = False
+        for attempt in range(3):
+            try:
+                try:
+                    driver.switch_to.frame("jitsiConferenceFrame0")
+                except Exception:
+                    driver.switch_to.frame(0)
+                self._inject_rtc_hook(driver, user_id)
+                logging.info(
+                    f"[User {user_id} -> Room {room_name}]: "
+                    f"Switched to iframe (attempt {attempt + 1})."
+                )
+                switched = True
+                break
+            except Exception as e:
+                logging.warning(
+                    f"[User {user_id}]: iframe switch attempt {attempt + 1}/3 "
+                    f"failed – {type(e).__name__}. Retrying in 2 s …"
+                )
+                driver.switch_to.default_content()
+                time.sleep(2)
+
+        if not switched:
+            raise RuntimeError("Could not switch into Jitsi iframe after 3 attempts.")
+
+        # ------------------------------------------------------------------
+        # Click "Join meeting" (inside iframe)
+        # ------------------------------------------------------------------
         try:
-            join_btn = WebDriverWait(driver, 30).until(
+            WebDriverWait(driver, 30).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, 'div[aria-label="Join meeting"]'))
-            )
-            join_btn.click()
+            ).click()
             logging.info(f"[User {user_id} -> Room {room_name}]: Clicked 'Join meeting'!")
             time.sleep(3)
         except Exception:
-            # Fallback: "Join without audio"
             try:
                 logging.info(f"[User {user_id} -> Room {room_name}]: Trying 'Join without audio' …")
-                WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'div[aria-label="Join without audio"]'))
+                WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable(
+                        (By.CSS_SELECTOR, 'div[aria-label="Join without audio"]')
+                    )
                 ).click()
                 time.sleep(3)
             except Exception as e2:
-                logging.warning(f"[User {user_id} -> Room {room_name}]: Could not click any join button: {e2}")
+                logging.warning(
+                    f"[User {user_id} -> Room {room_name}]: "
+                    f"Could not click any join button: {e2}"
+                )
 
         driver.switch_to.default_content()
 

@@ -53,6 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Disable headless mode (useful with VNC)")
     parser.add_argument("--url-format", choices=["jitsi", "airtime"], default="jitsi",
                         help="URL scheme: 'jitsi' = /<room>, 'airtime' = #/?room=<id>")
+    parser.add_argument("--join-stagger", type=float, default=None,
+                        help="Seconds to wait between launching each bot (default: 5.0 for "
+                             "airtime, 0.5 for jitsi). Prevents simultaneous Start-button "
+                             "clicks from racing the server.")
 
     # ── SSH Remote Monitoring ──────────────────────────────────────────
     ssh = parser.add_argument_group(
@@ -117,6 +121,14 @@ def main() -> None:
     start_wall = time.time()
 
     # ── Bot pool ───────────────────────────────────────────────────────
+    # Stagger bot submissions so they don't all click "Start" simultaneously.
+    # AirTime's SPA gets confused when multiple concurrent Start-clicks race
+    # to create the same room session → iframe src never populates.
+    join_stagger = args.join_stagger
+    if join_stagger is None:
+        join_stagger = 5.0 if args.url_format == "airtime" else 0.5
+    logging.info(f"⏱️  Join stagger: {join_stagger}s between bots")
+
     bot = JitsiBot(
         stats=stats,
         hub_url=args.hub_url,
@@ -133,6 +145,8 @@ def main() -> None:
                     executor.submit(bot.run, args.url, room_name, args.duration, uid)
                 )
                 uid += 1
+                if join_stagger > 0 and uid < total_users:
+                    time.sleep(join_stagger)
         concurrent.futures.wait(futures)
 
     # ── Teardown & Reporting ───────────────────────────────────────────

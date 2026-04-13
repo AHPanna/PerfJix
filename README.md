@@ -16,6 +16,7 @@ A lightweight, highly scalable load testing tool for **Jitsi Meet** and **Wimi A
 | **Local & SSH Monitoring** | Tracks JVB/Jicofo CPU, RAM, and net I/O — locally or on a remote server via SSH |
 | **Bastion / Jump Support** | SSH monitor can tunnel through a jump host to reach VMs behind a bastion |
 | **WebRTC Metrics** | Collects bitrate, jitter, packet loss, frame rate, codec, RTT per bot |
+| **Staggered Join** | Prevents server-side race conditions by launching bots with a configurable delay (`--join-stagger`). |
 | **Disconnect Detection** | Monitors for mid-test connection drops |
 
 ---
@@ -88,6 +89,7 @@ docker-compose -f jitsi-server.yml --env-file .env up -d
 | `--duration` | `60` | Seconds each bot stays in the room |
 | `--hub-url` | `http://localhost:4444/wd/hub` | Selenium Hub URL |
 | `--url-format` | `jitsi` | `jitsi` = `/<room>`, `airtime` = `#/?room=<id>` |
+| `--join-stagger` | `None` | Launch delay between bots (5s for airtime, 0.5s for jitsi). Prevents simultaneous "Start" clicks from racing the server. |
 | `--show-browser` | `false` | Disable headless (use with VNC) |
 
 #### SSH Remote Monitoring options
